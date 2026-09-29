@@ -170,14 +170,16 @@ try { if (!sessionStorage.getItem("launched") && !/[?&]splash=0/.test(location.s
   <div class="sheet" id="setup">
     <div class="grabber"></div>
     <h3>Enter your figures</h3>
-    <p class="sheet-sub">Each day you enter is kept. Pick a past day to overwrite it. Blank periods are estimated from what you did enter.</p>
+    <p class="sheet-sub">Each day you enter is kept. Pick a day to see or change its figures; days you leave blank are simulated. Blank periods are estimated from what you did enter.</p>
     <form id="setup-form" autocomplete="off">
       <div class="group">
+        <div class="day-chips" id="day-chips"></div>
         <label class="day-row"><span>Day</span><input type="date" name="day"></label>
         <div class="hint hint-plain" id="history"></div>
       </div>
       <div class="group">
         <div class="group-title" id="day-title">Today so far</div>
+        <div class="hint hint-plain" id="day-shown"></div>
         <label><span>Total sales (£)</span><input name="sales" inputmode="decimal" placeholder="0.00"></label>
         <label><span>Order items</span><input name="orders" inputmode="numeric" placeholder="0"></label>
         <label><span>Total balance (£)</span><input name="balance" inputmode="decimal" placeholder="0.00"></label>

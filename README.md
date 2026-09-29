@@ -33,13 +33,26 @@ to the Home Screen for a full-screen version with the real status bar.
 ## Daily backlog and simulation
 
 - Every day you enter is stored by date. Open the sheet (logo or the Sales card's three dots), pick a
-  day at the top, and enter or overwrite its figures. Days already shown are never reshuffled.
+  day from the row of the last 14 days (an orange dot marks days you entered) or any earlier date with
+  the date field, and enter or overwrite its figures. The sheet shows what the dashboard currently has
+  for that day, simulated or not. Days already shown are never reshuffled.
+- Every day has its own hourly shape rather than the same curve: the noise drifts over a few hours,
+  and some days get a sell-out (sales drop to almost nothing, sometimes restocked a few hours later),
+  a cheaper-at-night price (a late-evening peak), a rush, a lull, a burst of orders or dead hours.
+  Sell-outs and night deals also lower or raise that day's simulated total.
+- Pending orders on the Orders card are about 80% of today's order items plus 20% of yesterday's,
+  unless you enter a number yourself.
 - The ALL dropdown on the Orders card opens the **Simulation** switch. When it is on, each new day is
   generated from your recent level and trend with weekday and seasonal patterns, plus events:
   stock-outs (several days near zero, then a catch-up), supply hiccups, cash-flow squeezes,
   promotions and one-day dips. Today's figure grows through the day. Days that have passed are frozen
   into the backlog; the balance accrues net sales with a fortnightly payout and feedback counts tick up
   with orders.
+- Days you don't enter are simulated. A figure entered for today is the total by the time you enter it:
+  the entry time is stored, and the rest of the day keeps simulating on top of it (sales, orders, the
+  hourly chart and the balance keep growing). The forecast for the remaining hours is pulled towards
+  how the day was going when you entered it, more so the later in the day you entered it. Changing today's sales resets the entry
+  time; saving it unchanged keeps the original time. Figures entered for past days count as full days.
 - Switch it off to enter or overwrite days yourself; the entry sheet also opens on launch while it is
   off. Switch it back on and the simulation continues from what you entered (later simulated days are
   regenerated from the new trend).

@@ -273,4 +273,10 @@ label.single { border: 0; }
 .switch.on i { transform: translateX(20px); }
 .hint-plain { color: #6b7480; }
 .day-row input { width: 170px; text-align: left; font-family: inherit; }
+.day-chips { display: flex; gap: 6px; overflow-x: auto; margin: 0 -16px; padding: 2px 16px 8px; scrollbar-width: none; }
+.day-chips::-webkit-scrollbar { display: none; }
+.day-chip { flex: none; height: 30px; padding: 0 12px; border-radius: 15px; background: var(--teal-bg); color: var(--teal); font-size: 13px; text-align: center; }
+.day-chip.entered::after { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: #ff9900; margin-left: 5px; vertical-align: middle; }
+.day-chip.active { background: var(--teal); color: #fff; }
+#day-shown { margin: 0 0 4px; }
 .dropdown { cursor: pointer; }

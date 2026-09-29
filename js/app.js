@@ -30,11 +30,8 @@
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
-  function lognormal(r, sigma) {
-    const u = Math.max(r(), 1e-9), v = r();
-    const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-    return Math.exp(sigma * z - (sigma * sigma) / 2);
-  }
+  function gauss(r) { const u = Math.max(r(), 1e-9), v = r(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+  function lognormal(r, sigma) { return Math.exp(sigma * gauss(r) - (sigma * sigma) / 2); }
   function between(r, a, b) { return a + (b - a) * r(); }
   function poisson(r, lambda) { let L = Math.exp(-lambda), k = 0, p = 1; do { k++; p *= r(); } while (p > L); return k - 1; }
 
@@ -65,17 +62,37 @@
     if (r() < 0.04) w *= between(r, 0.35, 0.6);     // and the odd quiet day
     return w;
   }
-  function hourWeights(date) {
-    const r = rng("hours:" + ymd(date));
-    return HOUR_BASE.map((b) => b * lognormal(r, 0.30));
+  /* Each day has its own hourly shape: noise that drifts over a few hours instead of jittering, and on
+     some days a sell-out, a cheaper-at-night price, a rush, a lull or a burst of orders. `factor` is how
+     much those events add to or take from the day's total.                                            */
+  const shapes = {};
+  function dayShape(date) {
+    const key = ymd(date);
+    if (shapes[key]) return shapes[key];
+    const r = rng("hours:" + key);
+    const plain = [];
+    let z = 0;
+    for (let h = 0; h < 24; h++) { z = 0.7 * z + 0.28 * gauss(r); plain[h] = HOUR_BASE[h] * Math.exp(z) * lognormal(r, 0.25); }
+    const w = plain.slice();
+    const mul = (from, to, f) => { for (let h = from; h < to; h++) w[h % 24] *= f; };
+    const pick = (a, b) => Math.floor(between(r, a, b + 1));
+    if (r() < 0.25) mul(21, 27, between(r, 1.6, 2.8));                                          // price is best at night
+    if (r() < 0.1) { const s = pick(9, 21); mul(s, r() < 0.4 ? Math.min(s + pick(2, 6), 24) : 24, between(r, 0.03, 0.15)); } // sells out, sometimes restocked
+    if (r() < 0.18) { const s = pick(7, 19); mul(s, s + pick(2, 3), between(r, 1.8, 3)); }         // a rush
+    if (r() < 0.22) { const s = pick(8, 19); mul(s, s + pick(2, 4), between(r, 0.25, 0.55)); }     // a lull
+    if (r() < 0.2) w[pick(7, 23)] *= between(r, 1.8, 3);                                         // a burst of orders
+    for (let h = 0; h < 24; h++) if (r() < 0.06) w[h] *= between(r, 0.05, 0.3);                  // dead hours
+    const sp = plain.reduce((a, b) => a + b, 0), sw = w.reduce((a, b) => a + b, 0);
+    return (shapes[key] = { w, factor: Math.min(Math.max(sw / sp, 0.3), 1.8) });
   }
-  /* fraction of a typical day's sales that have happened by `now` */
-  function dayFraction(now) {
+  /* fraction of a day's sales that have happened by `now`, for the given hourly shape */
+  function dayFraction(now, w) {
+    w = w || HOUR_BASE;
     const h = now.getHours(), m = now.getMinutes();
-    const total = HOUR_BASE.reduce((a, b) => a + b, 0);
+    const total = w.reduce((a, b) => a + b, 0);
     let done = 0;
-    for (let i = 0; i < h; i++) done += HOUR_BASE[i];
-    done += HOUR_BASE[h] * (m / 60);
+    for (let i = 0; i < h; i++) done += w[i];
+    done += w[h] * (m / 60);
     return Math.max(done / total, 0.02);
   }
 
@@ -174,8 +191,23 @@
       else if (u < 0.12) ev = { type: "dip", remaining: 0, factor: between(r, 0.7, 0.85) };
       if (ev) { ev.remaining -= 1; factor = ev.factor; }
     }
-    const sales = base * Math.pow(growth, gap) * seasonOf(date) * lognormal(r, 0.22) * factor * recovery;
-    return { sales: Math.round(sales * 100) / 100, ev: ev && ev.remaining >= 0 ? ev : null, eventType: ev ? ev.type : null };
+    const plain = base * Math.pow(growth, gap) * seasonOf(date) * lognormal(r, 0.22);
+    const sales = plain * dayShape(date).factor * factor * recovery;
+    return { sales: Math.round(sales * 100) / 100, plain, ev: ev && ev.remaining >= 0 ? ev : null, eventType: ev ? ev.type : null };
+  }
+
+  /* A figure entered during its own day is "sales so far" at that moment; the rest of the day keeps
+     simulating. The forecast for the day is pulled towards what was entered, more so the later it was. */
+  function entryTime(rec, key) {
+    return rec && rec.src === "entered" && rec.sales != null && rec.at && ymd(new Date(rec.at)) === key ? new Date(rec.at) : null;
+  }
+  function completeDay(key, entered, at, forecast) {
+    const shape = dayShape(at);
+    const fAt = Math.min(dayFraction(at, shape.w), 0.999);
+    const F = forecast > 0 ? forecast * shape.factor : entered / fAt;
+    const ratio = F > 0 ? Math.pow(Math.max(entered / (F * fAt), 0.05), fAt / (fAt + 0.2)) : 0;
+    const rest = Math.round(F * ratio * (1 - fAt) * lognormal(rng("rest:" + key), 0.12) * 100) / 100;
+    return { entered, at, fAt, rest, full: Math.round((entered + rest) * 100) / 100 };
   }
 
   /* ------------------------------------------------------------------ */
@@ -190,7 +222,8 @@
     const last = n - 1;
     const dom = today.getDate();
     const doy = daysBetween(new Date(y, 0, 1), today) + 1;
-    const frac = dayFraction(now);
+    const frac = dayFraction(now, dayShape(today).w);
+    const fracPrev = dayFraction(now, dayShape(addDays(today, -1)).w);   // yesterday by this time
     const idx = (key) => daysBetween(first, parseYmd(key));
 
     // Anchor: the day the period totals refer to (or the first entered day, or today)
@@ -199,7 +232,8 @@
     const A = Math.min(Math.max(idx(anchorKey), 0), last);
     const anchorRec = state.days[anchorKey];
     const T0 = anchorRec && anchorRec.sales != null ? anchorRec.sales : null;
-    const anchorFrac = A === last ? frac : 1;
+    const anchorAt = entryTime(anchorRec, anchorKey);
+    const anchorFrac = anchorAt ? dayFraction(anchorAt, dayShape(anchorAt).w) : A === last ? frac : 1;   // period totals are as of that moment
 
     // ---- 1. Days up to the anchor: nested windows ending on the anchor ----
     const aDate = dates[A], aDom = aDate.getDate(), aDoy = daysBetween(new Date(aDate.getFullYear(), 0, 1), aDate) + 1;
@@ -235,7 +269,14 @@
     }
     const sales = new Array(n).fill(0);
     const fixed = new Array(n).fill(false);
-    for (const k of entered) { const i = idx(k); if (i >= 0 && i <= A && state.days[k].sales != null) { sales[i] = state.days[k].sales; fixed[i] = true; } }
+    const comp = {};   // index -> completion of a day entered part-way through
+    for (const k of entered) {
+      const i = idx(k), rec = state.days[k];
+      if (i < 0 || i > A || rec.sales == null) continue;
+      const at = i < A ? entryTime(rec, k) : null;
+      if (at) comp[i] = completeDay(k, rec.sales, at, rate);
+      sales[i] = at ? comp[i].full : rec.sales; fixed[i] = true;
+    }
     for (const w of win) {
       if (w.ringDays <= 0) continue;
       let sw = 0, fixedSum = 0;
@@ -255,13 +296,19 @@
     const eventsToday = { type: null };
     let changed = false;
     let history = [];
-    for (let i = Math.max(0, A - 60); i <= A; i++) history.push({ date: dates[i], sales: sales[i] });
+    for (let i = Math.max(0, A - 60); i < A; i++) history.push({ date: dates[i], sales: sales[i] });
+    if (anchorAt && T0 != null) { comp[A] = completeDay(anchorKey, T0, anchorAt, simulateDay(dates[A], history, null).plain); sales[A] = comp[A].full; }
+    history.push({ date: dates[A], sales: sales[A] });
     let prevEv = anchorRec && anchorRec.ev ? anchorRec.ev : null;
     let simTodayTotal = null;
     for (let i = A + 1; i <= last; i++) {
       const key = ymd(dates[i]);
       const rec = state.days[key];
-      if (rec && rec.sales != null && (rec.src === "entered" || rec.src === "sim")) {
+      const at = entryTime(rec, key);
+      if (at) {
+        comp[i] = completeDay(key, rec.sales, at, simulateDay(dates[i], history, null).plain);
+        sales[i] = comp[i].full; fixed[i] = true; prevEv = null;
+      } else if (rec && rec.sales != null && (rec.src === "entered" || rec.src === "sim")) {
         sales[i] = rec.sales; fixed[i] = rec.src === "entered";
         prevEv = rec.ev || null;
         if (i === last && rec.src === "sim") { simTodayTotal = rec.sales; eventsToday.type = rec.eventType || null; }
@@ -281,10 +328,14 @@
     }
     if (changed) save();
 
-    // Today: entered "so far" wins; otherwise the simulated full day scaled to the time of day
+    // Today: what was entered plus the simulated sales since; otherwise the simulated full day scaled to the time of day
     const todayRec = state.days[todayKey];
     let todaySoFar, todayIsEntered = false;
-    if (todayRec && todayRec.src === "entered" && todayRec.sales != null) { todaySoFar = todayRec.sales; todayIsEntered = true; }
+    if (comp[last]) {
+      const c = comp[last], since = Math.min(Math.max((frac - c.fAt) / (1 - c.fAt), 0), 1);
+      todaySoFar = Math.round((c.entered + c.rest * since) * 100) / 100; todayIsEntered = true;
+    }
+    else if (todayRec && todayRec.src === "entered" && todayRec.sales != null) { todaySoFar = todayRec.sales; todayIsEntered = true; }
     else if (A === last) { todaySoFar = sales[last]; }
     else { todaySoFar = Math.round((simTodayTotal || sales[last]) * frac * 100) / 100; }
     sales[last] = todaySoFar;
@@ -295,25 +346,41 @@
     const orders = new Array(n), units = new Array(n);
     for (let i = 0; i < n; i++) {
       const key = ymd(dates[i]), rec = state.days[key], r = rng("orders:" + key);
-      if (rec && rec.src === "entered" && rec.orders != null) orders[i] = rec.orders;
+      if (rec && rec.src === "entered" && rec.orders != null) {
+        orders[i] = rec.orders;
+        const extra = comp[i] ? sales[i] - comp[i].entered : 0;   // orders keep coming in after the entry
+        if (extra > 0) orders[i] += Math.round(extra / (aov * lognormal(r, 0.08)));
+      }
       else orders[i] = sales[i] > 0 ? Math.max(1, Math.round(sales[i] / (aov * lognormal(r, 0.08)))) : 0;
       units[i] = orders[i] + Math.round(orders[i] * between(r, 0.012, 0.06));
     }
 
     // ---- 4. Today's hours ----
     const H = now.getHours();
-    const hw = hourWeights(today);
+    const hw = dayShape(today).w;
     const hourly = new Array(24).fill(null);
-    if (todaySoFar > 0) {
+    const spread = (amount, from, to) => {   // share `amount` over the hours between two times of day
+      const w = new Array(24).fill(0);
       let sw = 0;
-      for (let h = 0; h <= H; h++) sw += h === H ? hw[h] * Math.max(now.getMinutes(), 4) / 60 : hw[h];
-      let acc = 0, maxH = 0;
-      for (let h = 0; h <= H; h++) {
-        const wgt = h === H ? hw[h] * Math.max(now.getMinutes(), 4) / 60 : hw[h];
-        const v = Math.round(todaySoFar * wgt / sw * 100) / 100;
-        hourly[h] = v; acc += v; if (wgt > hw[maxH]) maxH = h;
+      for (let h = Math.floor(from); h < 24 && h < to; h++) { w[h] = hw[h] * Math.max(Math.min(to, h + 1) - Math.max(from, h), 0); sw += w[h]; }
+      if (!(sw > 0)) { w[Math.min(Math.floor(from), 23)] = 1; sw = 1; }
+      let acc = 0, maxH = -1;
+      for (let h = 0; h < 24; h++) {
+        if (!(w[h] > 0)) continue;
+        const v = Math.round(amount * w[h] / sw * 100) / 100;
+        hourly[h] = (hourly[h] || 0) + v; acc += v; if (maxH < 0 || w[h] > w[maxH]) maxH = h;
       }
-      hourly[maxH] = Math.round((hourly[maxH] + (todaySoFar - acc)) * 100) / 100;
+      hourly[maxH] = Math.round((hourly[maxH] + (amount - acc)) * 100) / 100;
+    };
+    if (todaySoFar > 0) {
+      for (let h = 0; h <= H; h++) hourly[h] = 0;
+      const nowH = H + Math.max(now.getMinutes(), 4) / 60;
+      const c = comp[last];
+      if (c) {
+        const atH = Math.min(c.at.getHours() + c.at.getMinutes() / 60, nowH);
+        spread(c.entered, 0, atH);
+        if (todaySoFar > c.entered) spread(todaySoFar - c.entered, atH, nowH);
+      } else spread(todaySoFar, 0, nowH);
     }
 
     // ---- 5. Balance: last entered balance, then net sales accrue with a fortnightly disbursement ----
@@ -322,6 +389,7 @@
     if (lb) {
       balance = lb.value;
       const b0 = idx(lb.date);
+      if (comp[b0]) balance += (sales[b0] - comp[b0].entered) * 0.72;   // sales since the entry on that day
       for (let i = b0 + 1; i <= last; i++) {
         balance += sales[i] * 0.72;
         if ((i - b0) % 14 === 0) balance = Math.round(balance * 0.18 * 100) / 100;   // payout
@@ -346,7 +414,7 @@
       }
     }
 
-    return { now, today, dates, sales, orders, units, hourly, last, dom, doy, y, frac, todayIsEntered, balance, fb, eventsToday, anchorKey };
+    return { now, today, dates, sales, orders, units, hourly, last, dom, doy, y, frac, fracPrev, todayIsEntered, balance, fb, eventsToday, anchorKey };
   }
 
   function sum(arr, a, b) { let s = 0; for (let i = Math.max(a, 0); i <= Math.min(b, arr.length - 1); i++) s += arr[i]; return s; }
@@ -357,7 +425,7 @@
     const L = m.last, today = m.today;
     const dm = (i) => "" + m.dates[i].getDate() + " " + MONTHS[m.dates[i].getMonth()];
     if (id === "today") {
-      const f = m.frac;
+      const f = m.fracPrev;
       const yS = m.sales[L - 1] * f, yO = m.orders[L - 1] * f, yU = m.units[L - 1] * f;
       const labels = { 0: "12 AM", 5: "5 a.m.", 10: "10 AM", 15: "3 p.m.", 20: "8 PM" };
       return {
@@ -581,7 +649,8 @@
     const oc = state.ordersCard, L = model.last;
     const r = rng("orders-card:" + ymd(model.today));
     const o7 = sum(model.orders, L - 6, L);
-    const pending = oc.pending != null ? num(oc.pending) : (o7 > 0 ? Math.round(o7 * between(r, 0.006, 0.02)) : 0);
+    // open orders: roughly 80% of today's order items and 20% of yesterday's
+    const pending = oc.pending != null ? num(oc.pending) : Math.round(model.orders[L] * between(r, 0.72, 0.88) + model.orders[L - 1] * between(r, 0.14, 0.26));
     $("#v-pending").textContent = int(pending);
     $("#v-undispatched").textContent = int(oc.undispatched != null ? num(oc.undispatched) : 0);
     $("#v-dispatched").textContent = int(oc.dispatched != null ? num(oc.dispatched) : Math.max(o7 - pending, 0));
@@ -607,12 +676,26 @@
     const f = form.elements;
     const today = ymd(new Date());
     dayInput.max = today;
+    dayInput.min = (new Date().getFullYear() - 1) + "-01-01";
     dayInput.value = dayKey || today;
     const d = state.days[dayInput.value] || {};
     const val = (v) => (v == null ? "" : v);
     f.sales.value = val(d.sales); f.orders.value = val(d.orders); f.balance.value = val(d.balance);
     f.fbAvg.value = val(d.fbAvg); f.fbNeg.value = val(d.fbNeg); f.fbPos.value = val(d.fbPos); f.fbNeu.value = val(d.fbNeu);
-    $("#day-title").textContent = dayInput.value === today ? "Today so far" : "Figures for " + niceDate(dayInput.value) + (d.src === "sim" ? " (simulated – overwrite to fix)" : d.src === "entered" ? " (entered)" : "");
+    const isToday = dayInput.value === today;
+    $("#day-title").textContent = isToday ? "Today so far" : "Figures for " + niceDate(dayInput.value) + (d.src === "entered" ? " (entered)" : "");
+    // what the dashboard currently shows for the chosen day
+    const at = entryTime(d, dayInput.value);
+    const i = model ? daysBetween(model.dates[0], parseYmd(dayInput.value)) : -1;
+    let shown = "";
+    if (model && i >= 0 && i <= model.last) {
+      const s = money(model.sales[i]) + " · " + int(model.orders[i]) + " order items";
+      const t = at ? at.getHours() + ":" + String(at.getMinutes()).padStart(2, "0") : "";
+      if (at) shown = (isToday ? "Now " : "Full day: ") + s + " – your entry at " + t + " plus the simulated sales since.";
+      else if (d.src !== "entered") shown = (isToday ? "Simulated so far: " : "Simulated: ") + s + ". Enter figures to overwrite.";
+    }
+    $("#day-shown").textContent = shown;
+    renderDayChips(dayInput.value);
     f.d7.value = val(state.periods.d7); f.d30.value = val(state.periods.d30); f.month.value = val(state.periods.month); f.year.value = val(state.periods.year); f.lastYear.value = val(state.periods.lastYear);
     $("#periods-title").textContent = "Total sales per period (£) · optional" + (state.periods.asOf ? " · as of " + niceDate(state.periods.asOf) : "");
     f.pending.value = val(state.ordersCard.pending); f.undispatched.value = val(state.ordersCard.undispatched); f.dispatched.value = val(state.ordersCard.dispatched);
@@ -621,11 +704,27 @@
     $("#history").textContent = list.length ? "Entered days: " + list.map(niceDate).join(", ") : "";
     checkConsistency();
   }
+  function renderDayChips(sel) {
+    const box = $("#day-chips"), t = startOfDay(new Date());
+    box.textContent = "";
+    for (let k = 0; k < 14; k++) {
+      const d = addDays(t, -k), key = ymd(d), rec = state.days[key];
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "day-chip" + (key === sel ? " active" : "") + (rec && rec.src === "entered" ? " entered" : "");
+      b.textContent = k === 0 ? "Today" : k === 1 ? "Yesterday" : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][isoDow(d)] + " " + d.getDate();
+      b.addEventListener("click", () => fillForm(key));
+      box.appendChild(b);
+    }
+  }
   function readForm() {
     const f = form.elements, g = (n) => num(f[n].value);
     const day = dayInput.value || ymd(new Date());
     const rec = { sales: g("sales"), orders: g("orders"), balance: g("balance"), fbAvg: g("fbAvg"), fbNeg: g("fbNeg"), fbPos: g("fbPos"), fbNeu: g("fbNeu") };
-    if (Object.values(rec).some((v) => v != null)) state.days[day] = Object.assign({}, rec, { src: "entered" });
+    const prev = state.days[day];
+    // an entry made today is the total by now; keep the original time if the sales figure is unchanged
+    const at = prev && prev.src === "entered" && prev.sales === rec.sales && prev.at ? prev.at : day === ymd(new Date()) && rec.sales != null ? Date.now() : null;
+    if (Object.values(rec).some((v) => v != null)) state.days[day] = Object.assign({}, rec, { src: "entered", at });
     else if (state.days[day] && state.days[day].src === "entered") delete state.days[day];
     const np = { d7: g("d7"), d30: g("d30"), month: g("month"), year: g("year"), lastYear: g("lastYear") };
     const changedPeriods = ["d7", "d30", "month", "year", "lastYear"].some((k) => np[k] !== state.periods[k]);
