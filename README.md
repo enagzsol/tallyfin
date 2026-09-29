@@ -6,9 +6,6 @@ Pixel-measured clone of the Amazon Seller app home screen (UK marketplace) at iP
 
 ## Run
 
-Live: https://enagzsol.github.io/amazon-seller/ (GitHub Pages from the `main` branch of
-`enagzsol/amazon-seller`; a push updates it within a minute). Locally:
-
 Serve the folder over HTTP (the fonts need a real origin):
 
     python3 -m http.server 8765
