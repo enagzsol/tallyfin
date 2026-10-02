@@ -757,7 +757,6 @@
   });
   $("#backdrop").addEventListener("click", closeSheets);
   $("#logo").addEventListener("click", () => { fillForm(); openSheet(setup); });
-  $("#sales-kebab").addEventListener("click", () => { fillForm(); openSheet(setup); });
 
   /* Simulation toggle lives in the Orders card's ALL dropdown */
   const simSheet = $("#sim-sheet");
@@ -809,7 +808,6 @@
   function afterSplash() {
     if (q.get("state") === "setup") { fillForm(); openSheet(setup); }
     else if (q.get("state") === "sim") { openSheet(simSheet); }
-    else if (q.get("state") !== "none" && !state.sim) { fillForm(); setTimeout(() => openSheet(setup), 350); }
   }
   if (SPLASH_MS <= 0 || launched) {
     splash.classList.add("off");
